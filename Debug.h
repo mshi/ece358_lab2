@@ -7,8 +7,8 @@
 
 #ifndef DEBUG_H_
 #define DEBUG_H_
-#include <ostream>
-
+#include <iostream>
+//#define DEBUG
 class Debug {
  public:
 
@@ -16,7 +16,7 @@ class Debug {
   template<typename T>
   Debug& operator <<(const T &val) {
 #ifdef DEBUG
-    std::cerr << val;
+    std::cout << val;
 #endif
     return *this;
   }
@@ -24,7 +24,7 @@ class Debug {
   // For things like endl
   Debug& operator <<(std::ostream& (*pf)(std::ostream&)) {
 #ifdef DEBUG
-    std::cerr << pf;
+    std::cout << pf;
 #endif
     return *this;
   }

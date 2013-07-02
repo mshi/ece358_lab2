@@ -32,7 +32,7 @@ Node::Node(unsigned int id, double A, double mediumSense)
       m_lambda(A),
       m_state(Idle),
       m_mediumSense(mediumSense) {
-  m_busyEnd = numeric_limits<unsigned long>::max();
+  m_busyEnd = 0;
   m_mediumBusy = false;
   m_currentPacket = NULL;
 }
@@ -67,6 +67,7 @@ unsigned long Simulation::nextInterval(void) {
 }
 
 void Simulation::start(void) {
+
   Debug::getInstance() << "Start simulation" << endl;
 
   queue<Packet*> listOfPackets;
@@ -83,6 +84,7 @@ void Simulation::start(void) {
   for (unsigned long currentTick = 1; currentTick < m_ticks; ++currentTick) {
 
     if (packetTick == currentTick) {  // generate new packet
+      Debug::getInstance() << "Generate new packet" << endl;
       ++totalPackets;
       p = new Packet(packetTick, currentTick);
       listOfPackets.push(p);
@@ -101,9 +103,11 @@ void Simulation::start(void) {
 
     // go through all the nodes
     for (int i = 0; i < m_connectedNodes; ++i) {
-      Node currentNode = *nodes[i];
+      Node &currentNode = *nodes[i];
       switch (currentNode.m_state) {
         case Node::Transmitting:
+          Debug::getInstance() << "Node " << currentNode.m_id
+                               << " is transmitting" << endl;
           if (currentNode.m_busyEnd == currentTick) {  // if it finished transmitting
             currentNode.m_mediumBusy = false;
             ++m_packetsSuccess;
@@ -159,15 +163,22 @@ void Simulation::start(void) {
           detectCollisions(currentNode, currentTick);
           break;
         case Node::Idle:
+//          Debug::getInstance() << "Node " << currentNode.m_id << " is idle"
+//                               << endl;
           iteratePassing(currentNode.detectBusyMedium(currentTick));
           currentNode.m_wait = 0;
           if (currentNode.m_mediumBusy) {
             currentNode.m_wait = 0;
             currentNode.m_mediumSense = m_mediumSense;
           }
+//          Debug::getInstance() << "Node " << currentNode.m_id << " is busy? "
+//                               << currentNode.m_mediumBusy << " sense: "
+//                               << currentNode.m_mediumSense << " wait: "
+//                               << currentNode.m_wait << endl;
           if (currentNode.m_wait > 0) {
             --currentNode.m_wait;
           } else if (!currentNode.m_queue.empty()) {
+            Debug::getInstance() << "Here" << endl;
             if (!currentNode.m_mediumBusy && currentNode.m_mediumSense <= 0) {
               Debug::getInstance() << "Changing to transmit for Node: "
                                    << currentNode.m_id << endl;
@@ -177,6 +188,8 @@ void Simulation::start(void) {
           }
           break;
         case Node::Backoff:
+          Debug::getInstance() << "Node " << currentNode.m_id
+                               << " is in backoff wait" << endl;
           iteratePassing(currentNode.detectBusyMedium(currentTick));
           if (!currentNode.m_mediumBusy) {
             Debug::getInstance() << "Node: " << currentNode.m_id << " Backoff: "
@@ -328,6 +341,7 @@ void Simulation::detectCollisions(Node &node, unsigned long ticks) {
 }
 
 map<unsigned long, unsigned long> *Node::detectBusyMedium(unsigned long ticks) {
+
   if (m_passingPackets.empty()) {
     m_mediumBusy = false;
     return NULL;
@@ -352,6 +366,7 @@ map<unsigned long, unsigned long> *Node::detectBusyMedium(unsigned long ticks) {
 
 void Simulation::propagatePackets(Node &node, unsigned long ticks) {
   vector<unsigned long> received;
+
   for (map<unsigned long, Packet*>::const_iterator i = node.m_propagatingPackets
       .begin(); i != node.m_propagatingPackets.end(); ++i) {
     if (ticks >= i->second->m_propEnd) {
@@ -380,10 +395,11 @@ void Simulation::propagatePackets(Node &node, unsigned long ticks) {
   }
 }
 
-double Simulation::getPacketDelay() const{
+double Simulation::getPacketDelay() const {
   return m_packetsDelay / m_packetsSuccess;
 }
 
-double Simulation::getThroughput() const{
-  return (m_packetsSuccess * m_packetLength * TicksPerSecond)/(m_ticks * m_transmissionRate);
+double Simulation::getThroughput() const {
+  return (m_packetsSuccess * m_packetLength * TicksPerSecond)
+      / (m_ticks * m_transmissionRate);
 }
