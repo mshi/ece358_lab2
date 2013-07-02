@@ -25,7 +25,7 @@ Packet::Packet(unsigned long id, unsigned long startTime)
 Node::Node(unsigned int id, double A, double mediumSense)
     : m_id(id),
       m_packetsRemaining(0),
-      m_nextPacketArrival(0),
+      m_nextPacketArrival(1),
       m_wait(0),
       m_backoff(0),
       m_collisions(0),
@@ -49,7 +49,9 @@ Simulation::Simulation(unsigned int N, unsigned long ticks, double A, double L,
       m_packetsSuccess(0),
       m_packetsDelay(0),
       m_simFinished(false),
-      m_collisions(0) {
+      m_collisions(0),
+      m_successTrans(0),
+      m_totalPackets(0) {
 
   const double S = 2e8;  // speed of light in copper
   const double D = 10;  // 10m distance between neighbours
@@ -59,11 +61,41 @@ Simulation::Simulation(unsigned int N, unsigned long ticks, double A, double L,
   m_dTrans = TicksPerSecond * (L / W);
   m_jammingSignal = 48 * TicksPerSecond;
   nodes = new Node*[N];
+  cout << "dProp: " << m_dProp << endl;
+  cout << "dTrans: " << m_dTrans << endl;
+  cout << "Tp: " << m_tp << endl;
 }
 
-unsigned long Simulation::nextInterval(void) {
+void Node::generateNextPacketArrival(unsigned long tick) {
+  if (tick > m_nextPacketArrival) {
+    // Generate time for next packet arrival
+    m_nextPacketArrival = tick + nextInterval();
+  }
+}
+
+unsigned long Node::nextInterval(void) {
   double u = genrand();
   return ceil(-1 / m_lambda * TicksPerSecond * log(u));
+}
+
+Packet *Simulation::processPacketArrival(Node &node, unsigned long tick) {
+  if (node.m_nextPacketArrival == tick) {  // generate new packet
+    Debug::getInstance() << "Generate new packet" << endl;
+    ++m_totalPackets;
+    Packet *p = new Packet(tick, tick);
+    // randomly assign packet to stations
+    unsigned int src = rand() % m_connectedNodes;  // (0,N)
+    unsigned int dest = rand() % m_connectedNodes;
+    while (src == dest) {
+      dest = rand() % m_connectedNodes;
+    }
+    // put it in queue of the random station
+    p->m_sourceId = nodes[src]->m_id;
+    p->m_destId = dest;
+    nodes[src]->m_queue.push(p);
+    return p;
+  }
+  return NULL;
 }
 
 void Simulation::start(void) {
@@ -71,46 +103,34 @@ void Simulation::start(void) {
   Debug::getInstance() << "Start simulation" << endl;
 
   queue<Packet*> listOfPackets;
-  unsigned long totalPackets = 0;
 
   for (unsigned int i = 0; i < m_connectedNodes; ++i) {
     Debug::getInstance() << "Creating node: " << i << endl;
     nodes[i] = new Node(i, m_lambda, m_mediumSense);
   }
 
-  unsigned long packetTick = 1;
   Packet *p;
 
   for (unsigned long currentTick = 1; currentTick < m_ticks; ++currentTick) {
 
-    if (packetTick == currentTick) {  // generate new packet
-      Debug::getInstance() << "Generate new packet" << endl;
-      ++totalPackets;
-      p = new Packet(packetTick, currentTick);
-      listOfPackets.push(p);
-      // randomly assign packet to stations
-      unsigned int src = rand() % m_connectedNodes;  // (0,N)
-      unsigned int dest = rand() % m_connectedNodes;
-      while (src == dest) {
-        dest = rand() % m_connectedNodes;
-      }
-      // put it in queue of the random station
-      p->m_sourceId = nodes[src]->m_id;
-      p->m_destId = dest;
-      nodes[src]->m_queue.push(p);
-      packetTick += nextInterval();
-    }
-
+    cout << "current tick: " << currentTick << endl;
     // go through all the nodes
     for (int i = 0; i < m_connectedNodes; ++i) {
-      Node &currentNode = *nodes[i];
+      Node &currentNode = *(nodes[i]);
+
+      currentNode.generateNextPacketArrival(currentTick);
+      p = processPacketArrival(currentNode, currentTick);
+      if (p != NULL) {
+        listOfPackets.push(p);
+      }
+
       switch (currentNode.m_state) {
         case Node::Transmitting:
           Debug::getInstance() << "Node " << currentNode.m_id
                                << " is transmitting" << endl;
           if (currentNode.m_busyEnd == currentTick) {  // if it finished transmitting
             currentNode.m_mediumBusy = false;
-            ++m_packetsSuccess;
+            ++m_successTrans;
             currentNode.m_state = Node::Idle;
             currentNode.m_mediumSense = m_mediumSense;
           } else {  // process and wait
@@ -141,6 +161,7 @@ void Simulation::start(void) {
                 infoPacket->m_destId = currentNode.m_currentPacket->m_destId;
                 nodes[nId]->m_passingPackets[currentNode.m_currentPacket->m_id] =
                     infoPacket;
+                listOfPackets.push(infoPacket);
               }
 
               currentNode.m_mediumBusy = true;
@@ -168,7 +189,7 @@ void Simulation::start(void) {
           iteratePassing(currentNode.detectBusyMedium(currentTick));
           currentNode.m_wait = 0;
           if (currentNode.m_mediumBusy) {
-            currentNode.m_wait = 0;
+            currentNode.m_wait = 10;
             currentNode.m_mediumSense = m_mediumSense;
           }
 //          Debug::getInstance() << "Node " << currentNode.m_id << " is busy? "
@@ -178,7 +199,6 @@ void Simulation::start(void) {
           if (currentNode.m_wait > 0) {
             --currentNode.m_wait;
           } else if (!currentNode.m_queue.empty()) {
-            Debug::getInstance() << "Here" << endl;
             if (!currentNode.m_mediumBusy && currentNode.m_mediumSense <= 0) {
               Debug::getInstance() << "Changing to transmit for Node: "
                                    << currentNode.m_id << endl;
@@ -194,7 +214,7 @@ void Simulation::start(void) {
           if (!currentNode.m_mediumBusy) {
             Debug::getInstance() << "Node: " << currentNode.m_id << " Backoff: "
                                  << currentNode.m_backoff << endl;
-            --currentNode.m_backoff;
+            --(currentNode.m_backoff);
             if (currentNode.m_backoff <= 0) {
               currentNode.m_mediumSense = m_mediumSense;
               currentNode.m_state = Node::Idle;
@@ -228,7 +248,7 @@ void Simulation::iteratePassing(map<unsigned long, unsigned long> *overlap) {
   }
   // iterate through colliding packets
   if (overlap->size() > 1) {
-    for (map<unsigned long, unsigned long>::const_iterator src =
+    for (map<unsigned long, unsigned long>::iterator src =
         overlap->begin(); src != overlap->end(); ++src) {
       unsigned long nodeSrc = src->first;
       ++(nodes[nodeSrc]->m_propagatingPackets[overlap->at(nodeSrc)]->m_retry);
@@ -271,8 +291,16 @@ void Simulation::detectCollisions(Node &node, unsigned long ticks) {
     return;
   }
 
-  for (map<unsigned long, Packet*>::const_iterator i = node.m_passingPackets
+  for (map<unsigned long, Packet*>::iterator i = node.m_passingPackets
       .begin(); i != node.m_passingPackets.end(); ++i) {
+
+    if(node.m_passingPackets.empty()){
+      break;
+    }
+    if(i->second == NULL){
+      break;
+    }
+
     if ((ticks >= i->second->m_startTime) && (ticks < i->second->m_endTime)) {
       // packet collision retransmit packet
       ++m_collisions;
@@ -296,7 +324,7 @@ void Simulation::detectCollisions(Node &node, unsigned long ticks) {
       unsigned long collided = numeric_limits<unsigned long>::max();
       // retransmit packet that caused collision
       unsigned long nodeSrc = i->second->m_sourceId;
-      for (map<unsigned long, Packet*>::const_iterator j = nodes[nodeSrc]
+      for (map<unsigned long, Packet*>::iterator j = nodes[nodeSrc]
           ->m_propagatingPackets.begin();
           j != nodes[nodeSrc]->m_propagatingPackets.end(); ++j) {
         if (j->first == i->first) {
@@ -367,8 +395,9 @@ map<unsigned long, unsigned long> *Node::detectBusyMedium(unsigned long ticks) {
 void Simulation::propagatePackets(Node &node, unsigned long ticks) {
   vector<unsigned long> received;
 
-  for (map<unsigned long, Packet*>::const_iterator i = node.m_propagatingPackets
-      .begin(); i != node.m_propagatingPackets.end(); ++i) {
+  for (map<unsigned long, Packet*>::iterator i =
+      node.m_propagatingPackets.begin(); i != node.m_propagatingPackets.end();
+      ++i) {
     if (ticks >= i->second->m_propEnd) {
       received.push_back(i->first);
       node.m_mediumBusy = false;
@@ -402,4 +431,13 @@ double Simulation::getPacketDelay() const {
 double Simulation::getThroughput() const {
   return (m_packetsSuccess * m_packetLength * TicksPerSecond)
       / (m_ticks * m_transmissionRate);
+}
+
+void Simulation::printMiscStats() const {
+  cout << "Successful receives: " << m_packetsSuccess << endl;
+  cout << "Successful transmit: " << m_successTrans << endl;
+  cout << "Failed packets: " << m_packetsFail << endl;
+  cout << "Collided Packets: " << m_collisions << endl;
+  cout << "Total Packets: " << m_totalPackets << endl;
+
 }

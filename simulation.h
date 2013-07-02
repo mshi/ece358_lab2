@@ -48,6 +48,8 @@ class Node {
   std::map<unsigned long, Packet*> m_passingPackets;
 
   std::map<unsigned long, unsigned long> *detectBusyMedium(unsigned long ticks);
+  unsigned long nextInterval(void);
+  void generateNextPacketArrival(unsigned long tick);
 
 };
 
@@ -58,6 +60,7 @@ class Simulation {
   void start(void);
   double getPacketDelay() const;
   double getThroughput() const;
+  void printMiscStats() const;
 
  private:
   static unsigned long UniqueCounter;
@@ -72,6 +75,8 @@ class Simulation {
   unsigned long m_packetsSuccess;
   unsigned long m_packetsDelay;
   unsigned long m_collisions;
+  unsigned long m_successTrans;
+  unsigned long m_totalPackets;
   bool m_simFinished;
 
   double m_tp;
@@ -82,10 +87,10 @@ class Simulation {
 
   Node **nodes;
 
-  unsigned long nextInterval(void);
   void iteratePassing(std::map<unsigned long, unsigned long> *overlap);
   void detectCollisions(Node &node, unsigned long ticks);
   void propagatePackets(Node &node, unsigned long ticks);
+  Packet *processPacketArrival(Node &node, unsigned long tick);
 };
 
 #endif
