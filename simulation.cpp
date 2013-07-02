@@ -20,12 +20,14 @@ Packet::Packet(unsigned long id, unsigned long startTime)
   m_destId = numeric_limits<unsigned int>::max();
   m_propEnd = numeric_limits<unsigned int>::max();
   m_startTx = 0;
+  m_end = 0;
+  m_start = 0;
 }
 
 Node::Node(unsigned int id, double A, double mediumSense)
     : m_id(id),
       m_packetsRemaining(0),
-      m_nextPacketArrival(1),
+      m_nextPacketArrival(0),
       m_wait(0),
       m_backoff(0),
       m_collisions(0),
@@ -79,7 +81,7 @@ unsigned long Node::nextInterval(void) {
 }
 
 Packet *Simulation::processPacketArrival(Node &node, unsigned long tick) {
-  if (node.m_nextPacketArrival == tick) {  // generate new packet
+  if (node.m_nextPacketArrival <= tick) {  // generate new packet
     Debug::getInstance() << "Generate new packet" << endl;
     ++m_totalPackets;
     Packet *p = new Packet(tick, tick);
@@ -113,15 +115,19 @@ void Simulation::start(void) {
 
   for (unsigned long currentTick = 1; currentTick < m_ticks; ++currentTick) {
 
-    cout << "current tick: " << currentTick << endl;
+    bool added = false;
+    //cout << "current tick: " << currentTick << endl;
     // go through all the nodes
     for (int i = 0; i < m_connectedNodes; ++i) {
       Node &currentNode = *(nodes[i]);
 
-      currentNode.generateNextPacketArrival(currentTick);
-      p = processPacketArrival(currentNode, currentTick);
-      if (p != NULL) {
-        listOfPackets.push(p);
+      if (!added) {
+        currentNode.generateNextPacketArrival(currentTick);
+        p = processPacketArrival(currentNode, currentTick);
+        if (p != NULL) {
+          listOfPackets.push(p);
+          added = true;
+        }
       }
 
       switch (currentNode.m_state) {
@@ -156,7 +162,8 @@ void Simulation::start(void) {
                 unsigned long start = currentTick
                     + (abs(nId - currentNode.m_id)) * m_dProp;
                 Packet *infoPacket = new Packet(0, start);
-                infoPacket->m_endTime = start + m_dTrans;
+                infoPacket->m_start = start;
+                infoPacket->m_end = start + m_dTrans;
                 infoPacket->m_sourceId = currentNode.m_id;
                 infoPacket->m_destId = currentNode.m_currentPacket->m_destId;
                 nodes[nId]->m_passingPackets[currentNode.m_currentPacket->m_id] =
@@ -189,7 +196,7 @@ void Simulation::start(void) {
           iteratePassing(currentNode.detectBusyMedium(currentTick));
           currentNode.m_wait = 0;
           if (currentNode.m_mediumBusy) {
-            currentNode.m_wait = 10;
+            currentNode.m_wait = 0;
             currentNode.m_mediumSense = m_mediumSense;
           }
 //          Debug::getInstance() << "Node " << currentNode.m_id << " is busy? "
@@ -248,8 +255,8 @@ void Simulation::iteratePassing(map<unsigned long, unsigned long> *overlap) {
   }
   // iterate through colliding packets
   if (overlap->size() > 1) {
-    for (map<unsigned long, unsigned long>::iterator src =
-        overlap->begin(); src != overlap->end(); ++src) {
+    for (map<unsigned long, unsigned long>::iterator src = overlap->begin();
+        src != overlap->end(); ++src) {
       unsigned long nodeSrc = src->first;
       ++(nodes[nodeSrc]->m_propagatingPackets[overlap->at(nodeSrc)]->m_retry);
       if (nodes[nodeSrc]->m_propagatingPackets[overlap->at(nodeSrc)]->m_retry
@@ -273,8 +280,9 @@ void Simulation::iteratePassing(map<unsigned long, unsigned long> *overlap) {
       for (int i = 0; i < m_connectedNodes; ++i) {
         map<unsigned long, Packet*>::iterator it = nodes[i]->m_passingPackets
             .find(overlap->at(nodeSrc));
-        if (it != nodes[i]->m_passingPackets.end())
+        if (it != nodes[i]->m_passingPackets.end()) {
           nodes[i]->m_passingPackets.erase(it);
+        }
       }
       map<unsigned long, Packet*>::iterator it = nodes[nodeSrc]
           ->m_propagatingPackets.find(overlap->at(nodeSrc));
@@ -291,77 +299,86 @@ void Simulation::detectCollisions(Node &node, unsigned long ticks) {
     return;
   }
 
-  for (map<unsigned long, Packet*>::iterator i = node.m_passingPackets
-      .begin(); i != node.m_passingPackets.end(); ++i) {
+  bool repeat = true;
 
-    if(node.m_passingPackets.empty()){
-      break;
-    }
-    if(i->second == NULL){
-      break;
-    }
+  while (repeat) {
+    repeat = false;
+    for (map<unsigned long, Packet*>::iterator i =
+        node.m_passingPackets.begin(); i != node.m_passingPackets.end(); ++i) {
 
-    if ((ticks >= i->second->m_startTime) && (ticks < i->second->m_endTime)) {
-      // packet collision retransmit packet
-      ++m_collisions;
-      ++(node.m_currentPacket->m_retry);
-      if (node.m_currentPacket->m_retry > KMax) {
-        ++m_packetsFail;
-        node.m_state = Node::Idle;
-        node.m_mediumBusy = false;
-      } else {
-        node.m_failQueue.push(node.m_currentPacket);
-        double r = genrand() * (pow(2, node.m_currentPacket->m_retry) - 1);
-        node.m_state = Node::Backoff;
-        node.m_mediumBusy = false;
-        node.m_backoff = r * m_tp;
+      if (node.m_passingPackets.find(i->first)
+          == node.m_passingPackets.end() || i->second == NULL) {
+        break;
       }
-      map<unsigned long, Packet*>::iterator it = node.m_propagatingPackets.find(
-          node.m_currentPacket->m_id);
-      if (it != node.m_propagatingPackets.end()) {
-        node.m_propagatingPackets.erase(it);
-      }
-      unsigned long collided = numeric_limits<unsigned long>::max();
-      // retransmit packet that caused collision
-      unsigned long nodeSrc = i->second->m_sourceId;
-      for (map<unsigned long, Packet*>::iterator j = nodes[nodeSrc]
-          ->m_propagatingPackets.begin();
-          j != nodes[nodeSrc]->m_propagatingPackets.end(); ++j) {
-        if (j->first == i->first) {
-          ++(j->second->m_retry);
-          if (j->second->m_retry > KMax) {
-            ++m_packetsFail;
-            nodes[nodeSrc]->m_state = Node::Idle;
-            nodes[nodeSrc]->m_mediumBusy = false;
-          } else {
-            nodes[nodeSrc]->m_failQueue.push(j->second);
-            double r = genrand()
-                * (pow(2, nodes[nodeSrc]->m_currentPacket->m_retry) - 1);
-            nodes[nodeSrc]->m_state = Node::Backoff;
-            nodes[nodeSrc]->m_mediumBusy = false;
-            nodes[nodeSrc]->m_backoff = r * m_tp;
+
+      if ((ticks >= i->second->m_start) && (ticks < i->second->m_end)) {
+        // packet collision retransmit packet
+        ++m_collisions;
+        ++(node.m_currentPacket->m_retry);
+        if (node.m_currentPacket->m_retry > KMax) {
+          ++m_packetsFail;
+          node.m_state = Node::Idle;
+          node.m_mediumBusy = false;
+        } else {
+          node.m_failQueue.push(node.m_currentPacket);
+          double r = genrand() * (pow(2, node.m_currentPacket->m_retry) - 1);
+          node.m_state = Node::Backoff;
+          node.m_mediumBusy = false;
+          node.m_backoff = r * m_tp;
+        }
+        map<unsigned long, Packet*>::iterator it = node.m_propagatingPackets
+            .find(node.m_currentPacket->m_id);
+        if (it != node.m_propagatingPackets.end()) {
+          node.m_propagatingPackets.erase(it);
+        }
+        unsigned long collided = numeric_limits<unsigned long>::max();
+        // retransmit packet that caused collision
+        unsigned long nodeSrc = i->second->m_sourceId;
+        for (map<unsigned long, Packet*>::iterator j = nodes[nodeSrc]
+            ->m_propagatingPackets.begin();
+            j != nodes[nodeSrc]->m_propagatingPackets.end(); ++j) {
+          if (j->first == i->first) {
+            ++(j->second->m_retry);
+            if (j->second->m_retry > KMax) {
+              ++m_packetsFail;
+              nodes[nodeSrc]->m_state = Node::Idle;
+              nodes[nodeSrc]->m_mediumBusy = false;
+            } else {
+              nodes[nodeSrc]->m_failQueue.push(j->second);
+              double r = genrand()
+                  * (pow(2, nodes[nodeSrc]->m_currentPacket->m_retry) - 1);
+              nodes[nodeSrc]->m_state = Node::Backoff;
+              nodes[nodeSrc]->m_mediumBusy = false;
+              nodes[nodeSrc]->m_backoff = r * m_tp;
+            }
+            collided = j->first;
           }
-          collided = j->first;
-        }
-      }
-      // delete propogating packets
-      if (collided != numeric_limits<unsigned long>::max()) {
-        it = nodes[nodeSrc]->m_propagatingPackets.find(collided);
-        if (it != nodes[nodeSrc]->m_propagatingPackets.end()) {
-          nodes[nodeSrc]->m_propagatingPackets.erase(it);
-        }
-      }
-      for (int n = 0; n < m_connectedNodes; ++n) {
-        // packet that caused collision
-        it = nodes[n]->m_passingPackets.find(collided);
-        if (it != nodes[n]->m_passingPackets.end()) {
-          nodes[n]->m_passingPackets.erase(it);
         }
 
-        // packet that was transmitting
-        it = nodes[n]->m_passingPackets.find(node.m_currentPacket->m_id);
-        if (it != nodes[n]->m_passingPackets.end()) {
-          nodes[n]->m_passingPackets.erase(it);
+        // delete propogating packets
+        if (collided != numeric_limits<unsigned long>::max()) {
+          it = nodes[nodeSrc]->m_propagatingPackets.find(collided);
+          if (it != nodes[nodeSrc]->m_propagatingPackets.end()) {
+            nodes[nodeSrc]->m_propagatingPackets.erase(it);
+          }
+        }
+        for (int n = 0; n < m_connectedNodes; ++n) {
+          // packet that caused collision
+          it = nodes[n]->m_passingPackets.find(collided);
+          if (it != nodes[n]->m_passingPackets.end()) {
+            nodes[n]->m_passingPackets.erase(it);
+            repeat = true;
+          }
+
+          // packet that was transmitting
+          it = nodes[n]->m_passingPackets.find(node.m_currentPacket->m_id);
+          if (it != nodes[n]->m_passingPackets.end()) {
+            nodes[n]->m_passingPackets.erase(it);
+            repeat = true;
+          }
+        }
+        if (repeat) {
+          break;
         }
       }
     }
@@ -379,7 +396,7 @@ map<unsigned long, unsigned long> *Node::detectBusyMedium(unsigned long ticks) {
       unsigned long>();
   for (map<unsigned long, Packet*>::const_iterator i = m_passingPackets.begin();
       i != m_passingPackets.end(); ++i) {
-    if ((ticks >= i->second->m_startTime) && (ticks < i->second->m_endTime)) {  // overlapping
+    if ((ticks >= i->second->m_start) && (ticks < i->second->m_end)) {  // overlapping
       overlappingPackets->insert(
           make_pair<unsigned long, unsigned long>(i->second->m_sourceId,
                                                   i->first));
@@ -395,6 +412,7 @@ map<unsigned long, unsigned long> *Node::detectBusyMedium(unsigned long ticks) {
 void Simulation::propagatePackets(Node &node, unsigned long ticks) {
   vector<unsigned long> received;
 
+  //cout << "propagate" << endl;
   for (map<unsigned long, Packet*>::iterator i =
       node.m_propagatingPackets.begin(); i != node.m_propagatingPackets.end();
       ++i) {

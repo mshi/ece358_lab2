@@ -18,6 +18,8 @@ struct Packet {
   unsigned int m_destId;
   unsigned long m_propEnd;  // propagate until tick
   unsigned long m_startTx;
+  unsigned long m_start;
+  unsigned long m_end;
 };
 
 class Node {

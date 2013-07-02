@@ -27,8 +27,6 @@ int main(int argc, char* argv[]) {
   Simulation sim(numConnected, ticks, arrivalRate, packetLength, lanSpeed,
                  persistence);
 
-  int fk;
-  cin >> fk;
   sim.start();
 
   cout << "Average packet delay: " << sim.getPacketDelay() << endl;
